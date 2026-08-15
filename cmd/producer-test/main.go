@@ -4,29 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"strconv"
 
+	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
+	"github.com/jasleenkdev/recsys-go/internal/domain"
 )
-
-type EventType string
-
-const (
-	EventViewed        EventType = "viewed"
-	EventStarred       EventType = "starred"
-	EventClickedReadme EventType = "clicked_readme"
-)
-
-type RepoEvent struct {
-	EventType EventType `json:"event_type"`
-	UserID    string    `json:"user_id"`
-	RepoID    string    `json:"repo_id"`
-}
-
 func main() {
-	event := RepoEvent{
-		EventType: EventViewed,
-		UserID:    "user-123",
-		RepoID:    "repo-456",
+	event := domain.RepoEvent{
+		EventID:   uuid.NewString(),
+		EventType: domain.EventViewed,
+		UserID:    1,
+		RepoID:    1,
 	}
 
 	data, err := json.Marshal(event)
@@ -41,7 +30,7 @@ func main() {
 	defer writer.Close()
 
 	err = writer.WriteMessages(context.Background(), kafka.Message{
-		Key:   []byte(event.UserID), // partitions by user_id, per our design
+		Key: []byte(strconv.FormatInt(event.UserID, 10)),
 		Value: data,
 	})
 	if err != nil {
