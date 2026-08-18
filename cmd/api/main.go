@@ -9,8 +9,13 @@ import (
 	"strconv"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/redis/go-redis/v9"
+
+	"github.com/jasleenkdev/recsys-go/internal/session"
 	"github.com/jasleenkdev/recsys-go/internal/store"
 )
+
+const pageSize = 20
 
 type recommendationItem struct {
 	ItemID string  `json:"item_id"`
@@ -32,8 +37,13 @@ func main() {
 	}
 	defer db.Close()
 
+	rdb := redis.NewClient(&redis.Options{
+		Addr: "localhost:6390",
+	})
+	defer rdb.Close()
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/recommendations/{user_id}", recommendationsHandler(db))
+	mux.HandleFunc("GET /v1/recommendations/{user_id}", recommendationsHandler(db, rdb))
 
 	log.Println("api server listening on :8081")
 	if err := http.ListenAndServe(":8081", mux); err != nil {
@@ -41,8 +51,10 @@ func main() {
 	}
 }
 
-func recommendationsHandler(db *sql.DB) http.HandlerFunc {
+func recommendationsHandler(db *sql.DB, rdb *redis.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+
 		userIDStr := r.PathValue("user_id")
 		userID, err := strconv.ParseInt(userIDStr, 10, 64)
 		if err != nil {
@@ -50,36 +62,81 @@ func recommendationsHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		result, err := store.GetCandidates(r.Context(), db, userID)
-		if err != nil {
-			log.Printf("GetCandidates failed for user %d: %v", userID, err)
-			writeError(w, http.StatusInternalServerError, "internal_error", "failed to generate recommendations")
-			return
-		}
+		cursorParam := r.URL.Query().Get("cursor")
 
-		if result.FallbackReason != "" {
-			reason := result.FallbackReason
-			writeJSON(w, http.StatusOK, recommendationsResponse{
-				Items:          []recommendationItem{},
-				Cursor:         nil,
-				ModelVersion:   "none",
-				Fallback:       true,
-				FallbackReason: &reason,
-			})
-			return
-		}
+		var pool []store.RankedItem
+		var sessionID string
+		var offset int
 
-		items := make([]recommendationItem, len(result.Items))
-		for i, r := range result.Items {
-			items[i] = recommendationItem{
-				ItemID: strconv.FormatInt(r.ItemID, 10),
-				Score:  r.Score,
+		if cursorParam != "" {
+			decoded, err := session.DecodeCursor(cursorParam)
+			if err == nil {
+				existing, err := session.GetSession(ctx, rdb, decoded.SessionID)
+				if err == nil && existing != nil {
+					pool = existing
+					sessionID = decoded.SessionID
+					offset = decoded.Offset
+				}
+				// invalid, expired, or missing session — fall through
+				// to the fresh-session path below, same as no cursor.
 			}
+		}
+
+		if pool == nil {
+			result, err := store.GetCandidates(ctx, db, userID)
+			if err != nil {
+				log.Printf("GetCandidates failed for user %d: %v", userID, err)
+				writeError(w, http.StatusInternalServerError, "internal_error", "failed to generate recommendations")
+				return
+			}
+
+			if result.FallbackReason != "" {
+				reason := result.FallbackReason
+				writeJSON(w, http.StatusOK, recommendationsResponse{
+					Items:          []recommendationItem{},
+					Cursor:         nil,
+					ModelVersion:   "none",
+					Fallback:       true,
+					FallbackReason: &reason,
+				})
+				return
+			}
+
+			newSessionID, err := session.CreateSession(ctx, rdb, result.Items)
+			if err != nil {
+				log.Printf("failed to create session: %v", err)
+				writeError(w, http.StatusInternalServerError, "internal_error", "failed to generate recommendations")
+				return
+			}
+
+			pool = result.Items
+			sessionID = newSessionID
+			offset = 0
+		}
+
+		end := offset + pageSize
+		if end > len(pool) {
+			end = len(pool)
+		}
+		page := pool[offset:end]
+
+		items := make([]recommendationItem, len(page))
+		for i, item := range page {
+			items[i] = recommendationItem{
+				ItemID: strconv.FormatInt(item.ItemID, 10),
+				Score:  item.Score,
+			}
+		}
+
+		var nextCursor *string
+		if end < len(pool) {
+			c := session.EncodeCursor(session.Cursor{SessionID: sessionID, Offset: end})
+			nextCursor = &c
 		}
 
 		writeJSON(w, http.StatusOK, recommendationsResponse{
 			Items:          items,
-			Cursor:         nil, // no pagination yet — Redis snapshot cursor comes next
+			Cursor:         nextCursor,
 			ModelVersion:   "mpnet-v1",
 			Fallback:       false,
 			FallbackReason: nil,

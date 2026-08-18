@@ -18,8 +18,8 @@ import (
 const qdrantURL = "http://localhost:6343"
 
 const (
-	fetchBuffer = 30
-	returnLimit = 20
+	qdrantFetchLimit = 150 // over-fetch to leave room for exclusion + a full page pool
+	poolSize          = 100 // full ranked pool stored per session, not just one page
 
 	similarityWeight = 0.8
 	starsWeight       = 0.2
@@ -27,20 +27,17 @@ const (
 
 var httpClient = &http.Client{Timeout: 10 * time.Second}
 
-// RankedItem is a single candidate with its final blended score
-// (similarityWeight * cosine similarity + starsWeight * normalized stars).
+// RankedItem is a single candidate with its final blended score.
 type RankedItem struct {
 	ItemID int64
 	Score  float64
 }
 
-// CandidateResult holds up to 20 ranked candidates for a user, or a
-// FallbackReason if none could be produced (e.g. cold_start). It does
-// not handle fallback content itself — callers check FallbackReason
-// and decide what to show instead.
+// CandidateResult holds up to poolSize ranked candidates for a user,
+// or a FallbackReason if none could be produced (e.g. cold_start).
 type CandidateResult struct {
 	Items          []RankedItem
-	FallbackReason string // "" if not a fallback
+	FallbackReason string
 }
 
 type candidateScore struct {
@@ -61,9 +58,11 @@ type qdrantSearchResponse struct {
 	} `json:"result"`
 }
 
-// GetCandidates returns up to 20 ranked candidates for a user,
+// GetCandidates returns up to poolSize ranked candidates for a user,
 // blending ANN similarity (80%) with normalized star count (20%),
-// excluding items the user has already engaged with.
+// excluding items the user has already engaged with. Callers are
+// responsible for paginating this pool — it is not pre-sliced to a
+// single page.
 func GetCandidates(ctx context.Context, db *sql.DB, userID int64) (CandidateResult, error) {
 	embeddingText, err := getUserActiveEmbedding(ctx, db, userID)
 	if err != nil {
@@ -78,7 +77,7 @@ func GetCandidates(ctx context.Context, db *sql.DB, userID int64) (CandidateResu
 		return CandidateResult{}, fmt.Errorf("parsing user embedding: %w", err)
 	}
 
-	scored, err := searchRepoEmbeddings(ctx, vec, fetchBuffer)
+	scored, err := searchRepoEmbeddings(ctx, vec, qdrantFetchLimit)
 	if err != nil {
 		return CandidateResult{}, fmt.Errorf("querying qdrant: %w", err)
 	}
@@ -121,8 +120,8 @@ func GetCandidates(ctx context.Context, db *sql.DB, userID int64) (CandidateResu
 		return rankedList[i].Score > rankedList[j].Score
 	})
 
-	if len(rankedList) > returnLimit {
-		rankedList = rankedList[:returnLimit]
+	if len(rankedList) > poolSize {
+		rankedList = rankedList[:poolSize]
 	}
 
 	return CandidateResult{Items: rankedList}, nil
