@@ -13,5 +13,5 @@
 .vscode/
 .idea/
 embedding_sidecar/venv/
-promote-qdrant
+/promote-qdrant
 __pycache__/
