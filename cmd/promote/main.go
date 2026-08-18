@@ -2,7 +2,6 @@
 package main
 
 import (
-	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jasleenkdev/recsys-go/internal/store"
 )
 
 const sidecarURL = "http://localhost:8000/embed"
@@ -52,7 +52,7 @@ func getModelID(db *sql.DB, purpose string) (int64, error) {
 
 func fetchEmbedding(text string) ([]float64, error) {
 	body, _ := json.Marshal(map[string]string{"text": text})
-	resp, err := httpClient.Post(sidecarURL, "application/json", bytes.NewReader(body))
+	resp, err := httpClient.Post(sidecarURL, "application/json", strings.NewReader(string(body)))
 	if err != nil {
 		return nil, err
 	}
@@ -69,16 +69,6 @@ func fetchEmbedding(text string) ([]float64, error) {
 		return nil, err
 	}
 	return result.Embedding, nil
-}
-
-// vectorLiteral formats a Go float slice as Postgres's pgvector text
-// input format, e.g. "[0.1,0.2,0.3]".
-func vectorLiteral(v []float64) string {
-	strs := make([]string, len(v))
-	for i, f := range v {
-		strs[i] = fmt.Sprintf("%f", f)
-	}
-	return "[" + strings.Join(strs, ",") + "]"
 }
 
 type stagedRepo struct {
@@ -135,7 +125,7 @@ func promoteRepos(db *sql.DB, modelID int64) error {
 		_, err = db.Exec(`
 			INSERT INTO item_embeddings (item_id, model_id, embedding)
 			VALUES ($1, $2, $3)
-		`, itemID, modelID, vectorLiteral(vec))
+		`, itemID, modelID, store.VectorLiteral(vec))
 		if err != nil {
 			log.Printf("  [%d/%d] item_embeddings insert failed for staging id %d: %v", i+1, len(staged), r.ID, err)
 			continue
@@ -168,10 +158,6 @@ type stagedChunk struct {
 }
 
 func promoteChunks(db *sql.DB, modelID int64) error {
-	// Only chunks whose parent repo has already been promoted (has a
-	// real item_id) can be written — readme_chunks.item_id is a NOT
-	// NULL foreign key into items, so there's nothing valid to insert
-	// until the repo side of sweep 1 has run first.
 	rows, err := db.Query(`
 		SELECT c.id, c.staging_repo_id, c.section_heading, c.chunk_text, c.chunk_index
 		FROM readme_chunk_staging c
@@ -213,7 +199,7 @@ func promoteChunks(db *sql.DB, modelID int64) error {
 		_, err = db.Exec(`
 			INSERT INTO readme_chunks (item_id, model_id, chunk_text, section_heading, chunk_index, embedding)
 			VALUES ($1, $2, $3, $4, $5, $6)
-		`, itemID, modelID, c.ChunkText, c.SectionHeading, c.ChunkIndex, vectorLiteral(vec))
+		`, itemID, modelID, c.ChunkText, c.SectionHeading, c.ChunkIndex, store.VectorLiteral(vec))
 		if err != nil {
 			log.Printf("  [%d/%d] readme_chunks insert failed for chunk id %d: %v", i+1, len(staged), c.ID, err)
 			continue

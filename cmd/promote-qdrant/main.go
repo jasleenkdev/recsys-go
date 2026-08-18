@@ -1,4 +1,3 @@
-
 // cmd/promote-qdrant/main.go
 package main
 
@@ -12,8 +11,11 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jasleenkdev/recsys-go/internal/store"
 )
 
+// This project's Qdrant runs on host port 6343 (not the default 6333)
+// due to a local port conflict with an unrelated Docker stack.
 const qdrantURL = "http://localhost:6343"
 
 var httpClient = &http.Client{Timeout: 15 * time.Second}
@@ -91,7 +93,7 @@ func pushRepoEmbeddings(db *sql.DB) error {
 			return err
 		}
 
-		vec, err := parsePgvectorText(embeddingText)
+		vec, err := store.ParsePgvectorText(embeddingText)
 		if err != nil {
 			log.Printf("  skipping item %d: %v", itemID, err)
 			continue
@@ -140,7 +142,7 @@ func pushReadmeChunks(db *sql.DB) error {
 			return err
 		}
 
-		vec, err := parsePgvectorText(embeddingText)
+		vec, err := store.ParsePgvectorText(embeddingText)
 		if err != nil {
 			log.Printf("  skipping chunk %d: %v", chunkID, err)
 			continue
@@ -167,19 +169,4 @@ func pushReadmeChunks(db *sql.DB) error {
 		log.Printf("  pushed final batch of %d to readme_chunks", len(batch))
 	}
 	return nil
-}
-
-// parsePgvectorText parses pgvector's text output format "[0.1,0.2,...]"
-// back into a Go float slice.
-func parsePgvectorText(s string) ([]float64, error) {
-	var vec []float64
-	s = s[1 : len(s)-1] // strip surrounding [ ]
-	if s == "" {
-		return nil, fmt.Errorf("empty vector")
-	}
-	dec := json.NewDecoder(bytes.NewReader([]byte("[" + s + "]")))
-	if err := dec.Decode(&vec); err != nil {
-		return nil, err
-	}
-	return vec, nil
 }
