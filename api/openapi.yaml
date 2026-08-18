@@ -1,0 +1,212 @@
+openapi: 3.0.3
+# how api and clients communicate 
+# OpenAPI Contract
+# │
+# ├── API metadata
+# │
+# ├── Endpoints
+# │   ├── URL/path
+# │   ├── HTTP method
+# │   ├── Parameters
+# │   ├── Request body
+# │   └── Responses
+# │
+# ├── Data models / schemas
+# │
+# ├── HTTP status codes
+# │
+# ├── Error formats
+# │
+# ├── Authentication/security
+# │
+# └── Other API behavior/documentation
+info:
+  title: Recommendation API
+  version: 1.0.0
+  description: >
+    API for personalized video recommendations (behavioral path)
+    and grounded semantic search (RAG path).
+
+paths:
+  /v1/recommendations/{user_id}:
+    get:
+      summary: Get ranked recommendations for a user
+      description: >
+        Returns a page of ranked recommendations. Pagination uses a
+        snapshot cursor: the first request (no cursor supplied) computes
+        and freezes a ranked candidate list; subsequent requests page
+        through that same frozen snapshot rather than re-ranking.
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: ID of the user to fetch recommendations for.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+          description: Number of items to return per page.
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            Opaque cursor from a previous response. Omit on the first
+            request to start a new ranking snapshot.
+      responses:
+        '200':
+          description: Recommendations returned successfully (including degraded/fallback cases).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecommendationsResponse'
+        '400':
+          description: Malformed request (e.g. invalid cursor, limit out of range).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: user_id does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/recommendations/search:
+    post:
+      summary: Natural-language search with grounded, cited answers
+      description: >
+        Retrieves relevant transcript chunks for a query and generates
+        an answer strictly grounded in retrieved content. Never answers
+        without retrieval grounding — see the `status` field.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+      responses:
+        '200':
+          description: >
+            Request processed successfully. Check `status` to distinguish
+            a grounded answer from no_results or retrieval_error — all
+            three are valid 200 outcomes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '400':
+          description: Malformed request (e.g. missing or empty query).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  schemas:
+
+    RecommendationsResponse:
+      type: object
+      required: [items, cursor, model_version, fallback]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RecommendationItem'
+        cursor:
+          type: string
+          nullable: true
+          description: Pass back in the next request to fetch the following page. Null if no more pages.
+        model_version:
+          type: string
+          description: >
+            Version identifier of the model that produced these rankings.
+            Set to "none" when fallback is true.
+        fallback:
+          type: boolean
+          description: True if this response used degraded/non-personalized logic.
+        fallback_reason:
+          type: string
+          nullable: true
+          enum: [cold_start, ann_timeout, ann_error, cache_unavailable]
+          description: Populated only when fallback is true.
+
+    RecommendationItem:
+      type: object
+      required: [item_id, score]
+      properties:
+        item_id:
+          type: string
+        score:
+          type: number
+          format: float
+
+    SearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 500
+        user_id:
+          type: string
+          nullable: true
+          description: >
+            Optional. Used for logging/analytics only — does not bias
+            retrieval, to keep search results independently verifiable
+            and usable for cold-start users with no history.
+
+    SearchResponse:
+      type: object
+      required: [status, answer, citations]
+      properties:
+        status:
+          type: string
+          enum: [grounded, no_results, retrieval_error]
+        answer:
+          type: string
+          nullable: true
+          description: Null unless status is "grounded".
+        citations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Citation'
+
+    Citation:
+      type: object
+      required: [item_id, chunk_text, timestamp_start, timestamp_end, relevance_score]
+      properties:
+        item_id:
+          type: string
+        chunk_text:
+          type: string
+        timestamp_start:
+          type: integer
+          description: Seconds into the video where this chunk begins.
+        timestamp_end:
+          type: integer
+        relevance_score:
+          type: number
+          format: float
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string

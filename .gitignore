@@ -12,3 +12,5 @@
 # IDE files
 .vscode/
 .idea/
+embedding_sidecar/venv/
+promote-qdrant
