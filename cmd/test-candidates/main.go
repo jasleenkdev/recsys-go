@@ -32,8 +32,8 @@ func main() {
 		return
 	}
 
-	fmt.Printf("user %d: %d candidate item IDs\n", testUserID, len(result.ItemIDs))
-	for i, id := range result.ItemIDs {
-		fmt.Printf("  %d. item_id=%d\n", i+1, id)
+	fmt.Printf("user %d: %d candidate items\n", testUserID, len(result.Items))
+	for i, item := range result.Items {
+		fmt.Printf("  %d. item_id=%d score=%.4f\n", i+1, item.ItemID, item.Score)
 	}
 }

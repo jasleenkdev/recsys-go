@@ -27,12 +27,19 @@ const (
 
 var httpClient = &http.Client{Timeout: 10 * time.Second}
 
-// CandidateResult holds up to 20 ranked candidate item IDs for a user,
-// or a FallbackReason if no ANN candidates could be produced (e.g.
-// cold_start). It does not handle fallback content itself — callers
-// check FallbackReason and decide what to show instead.
+// RankedItem is a single candidate with its final blended score
+// (similarityWeight * cosine similarity + starsWeight * normalized stars).
+type RankedItem struct {
+	ItemID int64
+	Score  float64
+}
+
+// CandidateResult holds up to 20 ranked candidates for a user, or a
+// FallbackReason if none could be produced (e.g. cold_start). It does
+// not handle fallback content itself — callers check FallbackReason
+// and decide what to show instead.
 type CandidateResult struct {
-	ItemIDs        []int64
+	Items          []RankedItem
 	FallbackReason string // "" if not a fallback
 }
 
@@ -54,7 +61,7 @@ type qdrantSearchResponse struct {
 	} `json:"result"`
 }
 
-// GetCandidates returns up to 20 ranked candidate item IDs for a user,
+// GetCandidates returns up to 20 ranked candidates for a user,
 // blending ANN similarity (80%) with normalized star count (20%),
 // excluding items the user has already engaged with.
 func GetCandidates(ctx context.Context, db *sql.DB, userID int64) (CandidateResult, error) {
@@ -100,18 +107,14 @@ func GetCandidates(ctx context.Context, db *sql.DB, userID int64) (CandidateResu
 		}
 	}
 
-	type ranked struct {
-		ItemID int64
-		Score  float64
-	}
-	var rankedList []ranked
+	var rankedList []RankedItem
 	for _, c := range unseen {
 		normalizedStars := 0.0
 		if maxStars > 0 {
 			normalizedStars = float64(stars[c.ItemID]) / float64(maxStars)
 		}
 		finalScore := c.Similarity*similarityWeight + normalizedStars*starsWeight
-		rankedList = append(rankedList, ranked{ItemID: c.ItemID, Score: finalScore})
+		rankedList = append(rankedList, RankedItem{ItemID: c.ItemID, Score: finalScore})
 	}
 
 	sort.Slice(rankedList, func(i, j int) bool {
@@ -122,12 +125,7 @@ func GetCandidates(ctx context.Context, db *sql.DB, userID int64) (CandidateResu
 		rankedList = rankedList[:returnLimit]
 	}
 
-	ids := make([]int64, len(rankedList))
-	for i, r := range rankedList {
-		ids[i] = r.ItemID
-	}
-
-	return CandidateResult{ItemIDs: ids}, nil
+	return CandidateResult{Items: rankedList}, nil
 }
 
 func getUserActiveEmbedding(ctx context.Context, db *sql.DB, userID int64) (string, error) {
