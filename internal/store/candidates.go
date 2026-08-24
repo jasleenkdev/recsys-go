@@ -11,11 +11,9 @@ import (
 	"sort"
 	"strings"
 	"time"
-)
 
-// This project's Qdrant runs on host port 6343 (not the default 6333)
-// due to a local port conflict with an unrelated Docker stack.
-const qdrantURL = "http://localhost:6343"
+	"github.com/jasleenkdev/recsys-go/internal/config"
+)
 
 const (
 	qdrantFetchLimit = 150 // over-fetch to leave room for exclusion + a full page pool
@@ -178,7 +176,7 @@ func searchRepoEmbeddings(ctx context.Context, vec []float64, limit int) ([]cand
 		return nil, err
 	}
 
-	url := qdrantURL + "/collections/repo_embeddings/points/search"
+	url := config.Load().QdrantURL + "/collections/repo_embeddings/points/search"
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err

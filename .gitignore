@@ -1,6 +1,8 @@
 # Environment variables / secrets
 .env
 .env.*
+# ...but the committed template must stay tracked
+!.env.example
 
 # Go binaries
 /bin/

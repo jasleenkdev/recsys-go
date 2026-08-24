@@ -8,13 +8,14 @@ import (
 	"log"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jasleenkdev/recsys-go/internal/config"
 	"github.com/jasleenkdev/recsys-go/internal/store"
 )
 
 func main() {
 	ctx := context.Background()
 
-	db, err := sql.Open("pgx", "postgres://jasleenkaur@localhost:5432/recsys?sslmode=disable")
+	db, err := sql.Open("pgx", config.Load().DatabaseURL)
 	if err != nil {
 		log.Fatalf("failed to open db: %v", err)
 	}

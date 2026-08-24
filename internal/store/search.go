@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/jasleenkdev/recsys-go/internal/config"
 )
 
 const (
@@ -17,8 +19,6 @@ const (
 	maxChunksForContext = 5
 )
 
-const embedSidecarURL = "http://localhost:8000/embed"
-const ollamaURL = "http://localhost:11434/api/generate"
 const ollamaModel = "llama3.2:3b"
 
 var ollamaClient = &http.Client{Timeout: 60 * time.Second}
@@ -103,7 +103,7 @@ func SearchReadmes(ctx context.Context, db *sql.DB, query string) (SearchResult,
 
 func fetchEmbedding(ctx context.Context, text string) ([]float64, error) {
 	body, _ := json.Marshal(map[string]string{"text": text})
-	req, err := http.NewRequestWithContext(ctx, "POST", embedSidecarURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", config.Load().EmbedSidecarURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +138,7 @@ func searchReadmeChunks(ctx context.Context, db *sql.DB, vec []float64, limit in
 		return nil, err
 	}
 
-	url := qdrantURL + "/collections/readme_chunks/points/search"
+	url := config.Load().QdrantURL + "/collections/readme_chunks/points/search"
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -240,7 +240,7 @@ Answer:`, contextBuilder.String(), query)
 		return "", err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", ollamaURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", config.Load().OllamaURL, bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}

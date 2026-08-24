@@ -11,12 +11,9 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jasleenkdev/recsys-go/internal/config"
 	"github.com/jasleenkdev/recsys-go/internal/store"
 )
-
-// This project's Qdrant runs on host port 6343 (not the default 6333)
-// due to a local port conflict with an unrelated Docker stack.
-const qdrantURL = "http://localhost:6343"
 
 var httpClient = &http.Client{Timeout: 15 * time.Second}
 
@@ -36,7 +33,7 @@ func upsertPoints(collection string, points []qdrantPoint) error {
 		return err
 	}
 
-	url := fmt.Sprintf("%s/collections/%s/points?wait=true", qdrantURL, collection)
+	url := fmt.Sprintf("%s/collections/%s/points?wait=true", config.Load().QdrantURL, collection)
 	req, err := http.NewRequest("PUT", url, bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -56,7 +53,9 @@ func upsertPoints(collection string, points []qdrantPoint) error {
 }
 
 func main() {
-	db, err := sql.Open("pgx", "postgres://jasleenkaur@localhost:5432/recsys?sslmode=disable")
+	cfg := config.Load()
+
+	db, err := sql.Open("pgx", cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("failed to open db: %v", err)
 	}

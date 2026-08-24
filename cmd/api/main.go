@@ -15,6 +15,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/jasleenkdev/recsys-go/internal/config"
 	"github.com/jasleenkdev/recsys-go/internal/domain"
 	"github.com/jasleenkdev/recsys-go/internal/events"
 	"github.com/jasleenkdev/recsys-go/internal/session"
@@ -28,10 +29,7 @@ const pageSize = 20
 // frozen snapshot, so unlike pageSize it is safe to let clients vary.
 const browsePageDefault = 20
 
-const (
-	kafkaBroker = "localhost:9092"
-	kafkaTopic  = "repo-events"
-)
+const kafkaTopic = "repo-events"
 
 type recommendationItem struct {
 	ItemID string  `json:"item_id"`
@@ -409,18 +407,20 @@ func languagesHandler(db *sql.DB) http.HandlerFunc {
 }
 
 func main() {
-	db, err := sql.Open("pgx", "postgres://jasleenkaur@localhost:5432/recsys?sslmode=disable")
+	cfg := config.Load()
+
+	db, err := sql.Open("pgx", cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("failed to open db: %v", err)
 	}
 	defer db.Close()
 
 	rdb := redis.NewClient(&redis.Options{
-		Addr: "localhost:6390",
+		Addr: cfg.RedisAddr,
 	})
 	defer rdb.Close()
 
-	producer := events.NewProducer([]string{kafkaBroker}, kafkaTopic)
+	producer := events.NewProducer(cfg.KafkaBrokers, kafkaTopic)
 	defer producer.Close()
 
 	mux := http.NewServeMux()
@@ -432,8 +432,8 @@ func main() {
 	mux.HandleFunc("GET /v1/items/{item_id}", itemDetailHandler(db))
 	mux.HandleFunc("GET /v1/languages", languagesHandler(db))
 
-	log.Println("api server listening on :8081")
-	if err := http.ListenAndServe(":8081", mux); err != nil {
+	log.Printf("api server listening on %s", cfg.ListenAddr())
+	if err := http.ListenAndServe(cfg.ListenAddr(), mux); err != nil {
 		log.Fatal(err)
 	}
 }

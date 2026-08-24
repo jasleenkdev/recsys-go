@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
+	"github.com/jasleenkdev/recsys-go/internal/config"
 	"github.com/jasleenkdev/recsys-go/internal/domain"
 )
 func main() {
@@ -24,7 +25,7 @@ func main() {
 	}
 
 	writer := kafka.NewWriter(kafka.WriterConfig{
-		Brokers: []string{"localhost:9092"},
+		Brokers: config.Load().KafkaBrokers,
 		Topic:   "repo-events",
 	})
 	defer writer.Close()

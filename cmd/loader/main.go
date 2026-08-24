@@ -15,6 +15,8 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/jasleenkdev/recsys-go/internal/config"
 )
 
 // --- GitHub API response shapes ---
@@ -63,7 +65,7 @@ func main() {
 		log.Fatal("GITHUB_TOKEN not set")
 	}
 
-	db, err := sql.Open("pgx", "postgres://jasleenkaur@localhost:5432/recsys?sslmode=disable")
+	db, err := sql.Open("pgx", config.Load().DatabaseURL)
 	if err != nil {
 		log.Fatalf("failed to open db: %v", err)
 	}

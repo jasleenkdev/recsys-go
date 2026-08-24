@@ -11,15 +11,16 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jasleenkdev/recsys-go/internal/config"
 	"github.com/jasleenkdev/recsys-go/internal/store"
 )
-
-const sidecarURL = "http://localhost:8000/embed"
 
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 func main() {
-	db, err := sql.Open("pgx", "postgres://jasleenkaur@localhost:5432/recsys?sslmode=disable")
+	cfg := config.Load()
+
+	db, err := sql.Open("pgx", cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("failed to open db: %v", err)
 	}
@@ -52,7 +53,7 @@ func getModelID(db *sql.DB, purpose string) (int64, error) {
 
 func fetchEmbedding(text string) ([]float64, error) {
 	body, _ := json.Marshal(map[string]string{"text": text})
-	resp, err := httpClient.Post(sidecarURL, "application/json", strings.NewReader(string(body)))
+	resp, err := httpClient.Post(config.Load().EmbedSidecarURL, "application/json", strings.NewReader(string(body)))
 	if err != nil {
 		return nil, err
 	}

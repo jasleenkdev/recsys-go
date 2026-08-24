@@ -10,14 +10,16 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" driver
 	"github.com/segmentio/kafka-go"
 
+	"github.com/jasleenkdev/recsys-go/internal/config"
 	"github.com/jasleenkdev/recsys-go/internal/domain"
 	"github.com/jasleenkdev/recsys-go/internal/store"
 )
 
 func main() {
 	ctx := context.Background()
+	cfg := config.Load()
 
-	db, err := sql.Open("pgx", "postgres://jasleenkaur@localhost:5432/recsys?sslmode=disable")
+	db, err := sql.Open("pgx", cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("failed to open db: %v", err)
 	}
@@ -29,7 +31,7 @@ func main() {
 	}
 
 	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers: []string{"localhost:9092"},
+		Brokers: cfg.KafkaBrokers,
 		Topic:   "repo-events",
 		GroupID: "events-consumer",
 	})
