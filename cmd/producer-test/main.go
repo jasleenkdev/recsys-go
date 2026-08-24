@@ -15,7 +15,7 @@ func main() {
 		EventID:   uuid.NewString(),
 		EventType: domain.EventViewed,
 		UserID:    1,
-		RepoID:    1,
+		RepoID:    4,
 	}
 
 	data, err := json.Marshal(event)

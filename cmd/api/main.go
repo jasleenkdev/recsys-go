@@ -22,8 +22,6 @@ type recommendationItem struct {
 	Score  float64 `json:"score"`
 }
 
-// add to cmd/api/main.go
-
 type searchRequest struct {
 	Query string `json:"query"`
 }
@@ -37,9 +35,42 @@ type citationResponse struct {
 }
 
 type searchResponse struct {
-	Status    string              `json:"status"`
-	Answer    *string             `json:"answer"`
-	Citations []citationResponse  `json:"citations"`
+	Status    string             `json:"status"`
+	Answer    *string            `json:"answer"`
+	Citations []citationResponse `json:"citations"`
+}
+
+type authSyncRequest struct {
+	ExternalID string `json:"external_id"`
+}
+
+type authSyncResponse struct {
+	UserID int64 `json:"user_id"`
+}
+
+func authSyncHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req authSyncRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ExternalID == "" {
+			writeError(w, http.StatusBadRequest, "invalid_request", "external_id is required")
+			return
+		}
+
+		var userID int64
+		err := db.QueryRowContext(r.Context(), `
+			INSERT INTO users (external_id)
+			VALUES ($1)
+			ON CONFLICT (external_id) DO UPDATE SET external_id = EXCLUDED.external_id
+			RETURNING id
+		`, req.ExternalID).Scan(&userID)
+		if err != nil {
+			log.Printf("auth sync failed: %v", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "failed to sync user")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, authSyncResponse{UserID: userID})
+	}
 }
 
 func searchHandler(db *sql.DB) http.HandlerFunc {
@@ -94,10 +125,10 @@ func searchHandler(db *sql.DB) http.HandlerFunc {
 
 type recommendationsResponse struct {
 	Items          []recommendationItem `json:"items"`
-	Cursor         *string               `json:"cursor"`
-	ModelVersion   string                `json:"model_version"`
-	Fallback       bool                  `json:"fallback"`
-	FallbackReason *string               `json:"fallback_reason"`
+	Cursor         *string              `json:"cursor"`
+	ModelVersion   string               `json:"model_version"`
+	Fallback       bool                 `json:"fallback"`
+	FallbackReason *string              `json:"fallback_reason"`
 }
 
 func main() {
@@ -115,6 +146,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/recommendations/{user_id}", recommendationsHandler(db, rdb))
 	mux.HandleFunc("POST /v1/recommendations/search", searchHandler(db))
+	mux.HandleFunc("POST /v1/auth/sync", authSyncHandler(db))
 
 	log.Println("api server listening on :8081")
 	if err := http.ListenAndServe(":8081", mux); err != nil {
