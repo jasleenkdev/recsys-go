@@ -73,13 +73,21 @@ func fetchEmbedding(text string) ([]float64, error) {
 
 type stagedRepo struct {
 	ID          int64
+	GitHubID    int64
+	Owner       string
 	Name        string
 	Description sql.NullString
+	Language    sql.NullString
+	// TopicsJSON carries topics as JSON rather than a Go slice:
+	// database/sql has no array type, so the query casts on the way out
+	// and the insert casts back on the way in.
+	TopicsJSON string
 }
 
 func promoteRepos(db *sql.DB, modelID int64) error {
 	rows, err := db.Query(`
-		SELECT id, name, description
+		SELECT id, github_id, owner, name, description, language,
+		       array_to_json(COALESCE(topics, '{}'))::text
 		FROM repo_ingest_staging
 		WHERE embedded = false
 	`)
@@ -91,7 +99,8 @@ func promoteRepos(db *sql.DB, modelID int64) error {
 	var staged []stagedRepo
 	for rows.Next() {
 		var r stagedRepo
-		if err := rows.Scan(&r.ID, &r.Name, &r.Description); err != nil {
+		if err := rows.Scan(&r.ID, &r.GitHubID, &r.Owner, &r.Name, &r.Description,
+			&r.Language, &r.TopicsJSON); err != nil {
 			return err
 		}
 		staged = append(staged, r)
@@ -113,10 +122,12 @@ func promoteRepos(db *sql.DB, modelID int64) error {
 
 		var itemID int64
 		err = db.QueryRow(`
-			INSERT INTO items (title, description)
-			VALUES ($1, $2)
+			INSERT INTO items (title, description, owner, language, topics, github_id)
+			VALUES ($1, $2, $3, $4,
+			        COALESCE((SELECT array_agg(value) FROM json_array_elements_text($5::json)), '{}'),
+			        $6)
 			RETURNING id
-		`, r.Name, r.Description).Scan(&itemID)
+		`, r.Name, r.Description, r.Owner, r.Language, r.TopicsJSON, r.GitHubID).Scan(&itemID)
 		if err != nil {
 			log.Printf("  [%d/%d] items insert failed for staging id %d: %v", i+1, len(staged), r.ID, err)
 			continue

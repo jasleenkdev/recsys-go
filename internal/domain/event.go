@@ -1,6 +1,9 @@
 package domain
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 type EventType string
 
@@ -22,8 +25,18 @@ func (e EventType) Valid() bool {
 type RepoEvent struct {
 	EventID   string    `json:"event_id"`
 	EventType EventType `json:"event_type"`
-	UserID    int64    `json:"user_id"`
-	RepoID    int64    `json:"repo_id"`
+	UserID    int64     `json:"user_id"`
+	RepoID    int64     `json:"repo_id"`
+
+	// OccurredAt is when the engagement happened, as opposed to when a
+	// consumer got round to inserting it. It is the events table's
+	// partition key, and therefore half of the (event_id, created_at)
+	// uniqueness key — so a replayed event must carry the same value
+	// for the ON CONFLICT dedupe to fire.
+	//
+	// Zero is allowed: producers written before this field existed omit
+	// it, and InsertEvent falls back to now() for those.
+	OccurredAt time.Time `json:"occurred_at"`
 }
 
 func (e RepoEvent) Validate() error {

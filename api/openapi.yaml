@@ -24,8 +24,12 @@ info:
   title: Recommendation API
   version: 1.0.0
   description: >
-    API for personalized video recommendations (behavioral path)
-    and grounded semantic search (RAG path).
+    API for personalized GitHub repository recommendations (behavioral
+    path) and grounded semantic search over repository READMEs (RAG path).
+
+servers:
+  - url: http://localhost:8081
+    description: Local development
 
 paths:
   /v1/recommendations/{user_id}:
@@ -34,24 +38,25 @@ paths:
       description: >
         Returns a page of ranked recommendations. Pagination uses a
         snapshot cursor: the first request (no cursor supplied) computes
-        and freezes a ranked candidate list; subsequent requests page
-        through that same frozen snapshot rather than re-ranking.
+        and freezes a ranked candidate pool of up to 100 items in Redis;
+        subsequent requests page through that same frozen snapshot rather
+        than re-ranking. Page size is fixed at 20.
+
+
+        The snapshot expires after 10 minutes. A cursor that is malformed,
+        expired, or references a missing session is NOT an error — it is
+        treated exactly like no cursor at all, and a fresh snapshot is
+        computed and returned.
       parameters:
         - name: user_id
           in: path
           required: true
           schema:
             type: string
-          description: ID of the user to fetch recommendations for.
-        - name: limit
-          in: query
-          required: false
-          schema:
-            type: integer
-            default: 20
-            minimum: 1
-            maximum: 100
-          description: Number of items to return per page.
+            pattern: '^-?[0-9]+$'
+          description: >
+            ID of the user to fetch recommendations for. Must parse as a
+            64-bit integer; anything else returns 400 invalid_user_id.
         - name: cursor
           in: query
           required: false
@@ -62,19 +67,24 @@ paths:
             request to start a new ranking snapshot.
       responses:
         '200':
-          description: Recommendations returned successfully (including degraded/fallback cases).
+          description: >
+            Recommendations returned successfully. A user with no active
+            embedding (unknown or cold-start user) also lands here, as an
+            empty page with fallback=true — not as a 404.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/RecommendationsResponse'
         '400':
-          description: Malformed request (e.g. invalid cursor, limit out of range).
+          description: user_id is not a valid integer.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: user_id does not exist.
+        '500':
+          description: >
+            Candidate generation or snapshot storage failed (Postgres,
+            Qdrant, or Redis unreachable).
           content:
             application/json:
               schema:
@@ -84,9 +94,10 @@ paths:
     post:
       summary: Natural-language search with grounded, cited answers
       description: >
-        Retrieves relevant transcript chunks for a query and generates
-        an answer strictly grounded in retrieved content. Never answers
-        without retrieval grounding — see the `status` field.
+        Retrieves relevant README chunks for a query and generates an
+        answer strictly grounded in retrieved content. If no chunk clears
+        the relevance threshold the LLM is never called at all — the
+        response is no_results. See the `status` field.
       requestBody:
         required: true
         content:
@@ -98,13 +109,247 @@ paths:
           description: >
             Request processed successfully. Check `status` to distinguish
             a grounded answer from no_results or retrieval_error — all
-            three are valid 200 outcomes.
+            three are valid 200 outcomes. retrieval_error is deliberately
+            a 200: the server did its job and is reporting the outcome,
+            not failing to respond.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SearchResponse'
         '400':
-          description: Malformed request (e.g. missing or empty query).
+          description: Malformed JSON body, or missing/empty query.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/auth/sync:
+    post:
+      summary: Map an external identity onto a recsys user_id
+      description: >
+        Idempotent upsert keyed on external_id. Called by the frontend on
+        every fresh sign-in; repeated calls for the same external_id
+        return the same user_id rather than creating duplicates.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthSyncRequest'
+      responses:
+        '200':
+          description: User synced; the recsys user_id is returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSyncResponse'
+        '400':
+          description: Malformed JSON body, or missing/empty external_id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Upsert failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/events:
+    post:
+      summary: Record an engagement event
+      description: >
+        Publishes an engagement event to Kafka, from which the consumer
+        writes it to Postgres and recomputes the user's embedding. The
+        API deliberately does not write to Postgres directly: a direct
+        write would persist the event but leave the user's
+        recommendations frozen at their pre-event state.
+
+
+        Because the write is asynchronous, a 202 means "durably queued",
+        not "readable". The event will not appear in
+        GET /v1/recommendations exclusions immediately.
+
+
+        Idempotency: replaying a request that echoes BOTH `event_id` and
+        `occurred_at` from a previous 202 is deduped and inserted once.
+        Echoing only `event_id` is not sufficient — `occurred_at` is the
+        events table's partition key and therefore half of the
+        uniqueness key.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventRequest'
+      responses:
+        '202':
+          description: >
+            Event accepted and acknowledged by all in-sync Kafka
+            replicas. Echo both returned fields to retry safely.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventResponse'
+        '400':
+          description: >
+            Malformed JSON body, unknown event_type, non-positive
+            user_id/item_id, or a non-UUID event_id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: >
+            user_id or item_id does not exist. Checked up front because
+            both are foreign keys: an unchecked bad id would be a
+            permanent insert failure in the consumer, which drops the
+            message — the client would have seen 202 for an event that
+            is never stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: >
+            The event could not be queued. Safe to retry with the same
+            event_id and occurred_at.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: The reference check failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/items:
+    get:
+      summary: Browse the repository catalog
+      description: >
+        Lists repositories ordered by stars descending, id descending as
+        a deterministic tie-break.
+
+
+        Unlike GET /v1/recommendations this uses keyset pagination
+        against a stored index rather than a frozen Redis snapshot: the
+        ordering key is stored, not computed per user, so paging
+        straight off the index is cheaper and needs no session state or
+        TTL. The consequence is that a bad cursor IS an error here —
+        silently restarting from the top of the catalog would look like
+        working pagination while repeating items the client already
+        showed.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+          description: Items per page.
+        - name: language
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            Exact-match language filter, e.g. "Go". See GET /v1/languages
+            for the values present in the catalog. Omit for all languages.
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            Opaque cursor from a previous response. It carries the
+            language filter it was created under, so `language` may be
+            omitted when paging. Supplying a `language` that contradicts
+            the cursor is a 400 rather than a silently mixed result set.
+      responses:
+        '200':
+          description: A page of the catalog.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrowseResponse'
+        '400':
+          description: limit out of range, malformed cursor, or language contradicting the cursor.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Listing failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/items/{item_id}:
+    get:
+      summary: Get one repository with its README
+      description: >
+        Returns repository metadata plus its README, in document order,
+        as the same chunks the RAG path cites — so a client can
+        cross-reference a search citation's chunk_index against this
+        response.
+      parameters:
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^-?[0-9]+$'
+          description: Must parse as a 64-bit integer; anything else returns 400.
+      responses:
+        '200':
+          description: >
+            The repository. A repo with no ingested README is not an
+            error — `readme` is simply an empty array.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemDetail'
+        '400':
+          description: item_id is not a valid integer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: item_id does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Fetch failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/languages:
+    get:
+      summary: List languages present in the catalog
+      description: >
+        Distinct languages ordered by repository count descending, so a
+        browse UI can populate its filter control without hardcoding the
+        ingest categories.
+      responses:
+        '200':
+          description: The language list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LanguagesResponse'
+        '500':
+          description: Query failed.
           content:
             application/json:
               schema:
@@ -115,7 +360,7 @@ components:
 
     RecommendationsResponse:
       type: object
-      required: [items, cursor, model_version, fallback]
+      required: [items, cursor, model_version, fallback, fallback_reason]
       properties:
         items:
           type: array
@@ -136,8 +381,12 @@ components:
         fallback_reason:
           type: string
           nullable: true
-          enum: [cold_start, ann_timeout, ann_error, cache_unavailable]
-          description: Populated only when fallback is true.
+          enum: [cold_start]
+          description: >
+            Populated only when fallback is true. cold_start is currently
+            the only reason emitted — the user has no active embedding.
+            Other degradation modes (ANN timeout, cache unavailable) are
+            not yet distinguished and currently surface as 500s.
 
     RecommendationItem:
       type: object
@@ -145,9 +394,13 @@ components:
       properties:
         item_id:
           type: string
+          description: Integer item id, serialized as a string.
         score:
           type: number
           format: float
+          description: >
+            Blended rank score: 0.8 * ANN cosine similarity +
+            0.2 * star count normalized against the candidate pool max.
 
     SearchRequest:
       type: object
@@ -156,14 +409,6 @@ components:
         query:
           type: string
           minLength: 1
-          maxLength: 500
-        user_id:
-          type: string
-          nullable: true
-          description: >
-            Optional. Used for logging/analytics only — does not bias
-            retrieval, to keep search results independently verifiable
-            and usable for cold-start users with no history.
 
     SearchResponse:
       type: object
@@ -178,25 +423,181 @@ components:
           description: Null unless status is "grounded".
         citations:
           type: array
+          description: >
+            Chunks that cleared the relevance threshold, at most 5.
+            Empty for no_results and retrieval_error.
           items:
             $ref: '#/components/schemas/Citation'
 
     Citation:
       type: object
-      required: [item_id, chunk_text, timestamp_start, timestamp_end, relevance_score]
+      required: [item_id, chunk_text, section_heading, chunk_index, relevance_score]
       properties:
         item_id:
           type: string
+          description: Integer item id of the repo this chunk came from, serialized as a string.
         chunk_text:
           type: string
-        timestamp_start:
+        section_heading:
+          type: string
+          description: >
+            README section this chunk was taken from. Empty string when
+            the chunk sits above the first heading.
+        chunk_index:
           type: integer
-          description: Seconds into the video where this chunk begins.
-        timestamp_end:
-          type: integer
+          description: Zero-based position of this chunk within the repo's README.
         relevance_score:
           type: number
           format: float
+
+    AuthSyncRequest:
+      type: object
+      required: [external_id]
+      properties:
+        external_id:
+          type: string
+          minLength: 1
+          description: >
+            Stable external identity, namespaced by provider — the
+            frontend sends "github:<numeric GitHub user id>".
+
+    AuthSyncResponse:
+      type: object
+      required: [user_id]
+      properties:
+        user_id:
+          type: integer
+          format: int64
+
+    EventRequest:
+      type: object
+      required: [event_type, user_id, item_id]
+      properties:
+        event_type:
+          type: string
+          enum: [viewed, starred, clicked_readme]
+        user_id:
+          type: integer
+          format: int64
+          minimum: 1
+        item_id:
+          type: integer
+          format: int64
+          minimum: 1
+        event_id:
+          type: string
+          format: uuid
+          description: >
+            Optional; server-generated when omitted. Supply the value
+            from a previous 202 to retry that exact event.
+        occurred_at:
+          type: string
+          format: date-time
+          description: >
+            Optional; defaults to the time the request is handled. When
+            retrying, echo the value from the previous 202 — dedupe is
+            on (event_id, occurred_at), not event_id alone.
+
+    EventResponse:
+      type: object
+      required: [event_id, occurred_at, status]
+      properties:
+        event_id:
+          type: string
+          format: uuid
+        occurred_at:
+          type: string
+          format: date-time
+          description: The effective timestamp. Echo it with event_id to retry idempotently.
+        status:
+          type: string
+          enum: [accepted]
+
+    Item:
+      type: object
+      required: [item_id, owner, name, description, language, topics, stars, github_url, created_at]
+      properties:
+        item_id:
+          type: string
+          description: Integer item id, serialized as a string.
+        owner:
+          type: string
+          description: GitHub owner login.
+        name:
+          type: string
+          description: Repository name, without the owner prefix.
+        description:
+          type: string
+          description: Empty string when the repo has no description.
+        language:
+          type: string
+          description: Empty string when GitHub reported no primary language.
+        topics:
+          type: array
+          items:
+            type: string
+          description: Never null; an empty array when the repo has no topics.
+        stars:
+          type: integer
+        github_url:
+          type: string
+          format: uri
+          description: Derived as https://github.com/{owner}/{name}.
+        created_at:
+          type: string
+          format: date-time
+          description: >
+            When the row was ingested into this catalog — NOT the repo's
+            creation date on GitHub.
+
+    ItemDetail:
+      allOf:
+        - $ref: '#/components/schemas/Item'
+        - type: object
+          required: [readme]
+          properties:
+            readme:
+              type: array
+              description: README chunks in document order. Empty if none were ingested.
+              items:
+                $ref: '#/components/schemas/ReadmeSection'
+
+    ReadmeSection:
+      type: object
+      required: [chunk_index, section_heading, chunk_text]
+      properties:
+        chunk_index:
+          type: integer
+          description: >
+            Zero-based position within the README. Matches the
+            chunk_index on a search Citation for the same repo.
+        section_heading:
+          type: string
+          description: Empty string for content above the first heading.
+        chunk_text:
+          type: string
+
+    BrowseResponse:
+      type: object
+      required: [items, cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Item'
+        cursor:
+          type: string
+          nullable: true
+          description: Pass back to fetch the following page. Null on the last page.
+
+    LanguagesResponse:
+      type: object
+      required: [languages]
+      properties:
+        languages:
+          type: array
+          items:
+            type: string
 
     ErrorResponse:
       type: object
