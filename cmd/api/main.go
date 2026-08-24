@@ -22,6 +22,76 @@ type recommendationItem struct {
 	Score  float64 `json:"score"`
 }
 
+// add to cmd/api/main.go
+
+type searchRequest struct {
+	Query string `json:"query"`
+}
+
+type citationResponse struct {
+	ItemID         string  `json:"item_id"`
+	ChunkText      string  `json:"chunk_text"`
+	SectionHeading string  `json:"section_heading"`
+	ChunkIndex     int     `json:"chunk_index"`
+	RelevanceScore float64 `json:"relevance_score"`
+}
+
+type searchResponse struct {
+	Status    string              `json:"status"`
+	Answer    *string             `json:"answer"`
+	Citations []citationResponse  `json:"citations"`
+}
+
+func searchHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req searchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "malformed JSON body")
+			return
+		}
+		if req.Query == "" {
+			writeError(w, http.StatusBadRequest, "missing_query", "query field is required")
+			return
+		}
+
+		result, err := store.SearchReadmes(r.Context(), db, req.Query)
+		if err != nil {
+			log.Printf("SearchReadmes failed: %v", err)
+			// Even on error, respond with retrieval_error status —
+			// per contract, this is still a 200: the server did its
+			// job and is reporting the outcome, not a transport failure.
+			writeJSON(w, http.StatusOK, searchResponse{
+				Status:    string(store.StatusRetrievalError),
+				Answer:    nil,
+				Citations: []citationResponse{},
+			})
+			return
+		}
+
+		citations := make([]citationResponse, len(result.Citations))
+		for i, c := range result.Citations {
+			citations[i] = citationResponse{
+				ItemID:         strconv.FormatInt(c.ItemID, 10),
+				ChunkText:      c.ChunkText,
+				SectionHeading: c.SectionHeading,
+				ChunkIndex:     c.ChunkIndex,
+				RelevanceScore: c.RelevanceScore,
+			}
+		}
+
+		var answer *string
+		if result.Status == store.StatusGrounded {
+			answer = &result.Answer
+		}
+
+		writeJSON(w, http.StatusOK, searchResponse{
+			Status:    string(result.Status),
+			Answer:    answer,
+			Citations: citations,
+		})
+	}
+}
+
 type recommendationsResponse struct {
 	Items          []recommendationItem `json:"items"`
 	Cursor         *string               `json:"cursor"`
@@ -44,6 +114,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/recommendations/{user_id}", recommendationsHandler(db, rdb))
+	mux.HandleFunc("POST /v1/recommendations/search", searchHandler(db))
 
 	log.Println("api server listening on :8081")
 	if err := http.ListenAndServe(":8081", mux); err != nil {
