@@ -34,6 +34,13 @@ const kafkaTopic = "repo-events"
 type recommendationItem struct {
 	ItemID string  `json:"item_id"`
 	Score  float64 `json:"score"`
+
+	// Title, Description and Stars ride along with the ranking so a
+	// client can render a card from this response alone. They come from
+	// the same rows the ranker already reads to score by stars.
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Stars       int    `json:"stars"`
 }
 
 type searchRequest struct {
@@ -41,7 +48,13 @@ type searchRequest struct {
 }
 
 type citationResponse struct {
-	ItemID         string  `json:"item_id"`
+	ItemID string `json:"item_id"`
+
+	// Title and RepoURL identify the cited repo inline, so rendering a
+	// citation needs no follow-up lookup of the item it came from.
+	Title   string `json:"title"`
+	RepoURL string `json:"repo_url"`
+
 	ChunkText      string  `json:"chunk_text"`
 	SectionHeading string  `json:"section_heading"`
 	ChunkIndex     int     `json:"chunk_index"`
@@ -117,6 +130,8 @@ func searchHandler(db *sql.DB) http.HandlerFunc {
 		for i, c := range result.Citations {
 			citations[i] = citationResponse{
 				ItemID:         strconv.FormatInt(c.ItemID, 10),
+				Title:          c.Title,
+				RepoURL:        c.RepoURL,
 				ChunkText:      c.ChunkText,
 				SectionHeading: c.SectionHeading,
 				ChunkIndex:     c.ChunkIndex,
@@ -299,7 +314,7 @@ func toItemResponse(it store.Item) itemResponse {
 		Language:    it.Language,
 		Topics:      it.Topics,
 		Stars:       it.Stars,
-		GitHubURL:   "https://github.com/" + it.Owner + "/" + it.Name,
+		GitHubURL:   store.GitHubURL(it.Owner, it.Name),
 		CreatedAt:   it.CreatedAt,
 	}
 }
@@ -510,8 +525,11 @@ func recommendationsHandler(db *sql.DB, rdb *redis.Client) http.HandlerFunc {
 		items := make([]recommendationItem, len(page))
 		for i, item := range page {
 			items[i] = recommendationItem{
-				ItemID: strconv.FormatInt(item.ItemID, 10),
-				Score:  item.Score,
+				ItemID:      strconv.FormatInt(item.ItemID, 10),
+				Score:       item.Score,
+				Title:       item.Title,
+				Description: item.Description,
+				Stars:       item.Stars,
 			}
 		}
 

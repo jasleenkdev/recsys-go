@@ -390,7 +390,7 @@ components:
 
     RecommendationItem:
       type: object
-      required: [item_id, score]
+      required: [item_id, score, title, description, stars]
       properties:
         item_id:
           type: string
@@ -401,6 +401,19 @@ components:
           description: >
             Blended rank score: 0.8 * ANN cosine similarity +
             0.2 * star count normalized against the candidate pool max.
+        title:
+          type: string
+          description: >
+            Repository name, without the owner prefix — the same value
+            GET /v1/items returns as `name`.
+        description:
+          type: string
+          description: Empty string when the repo has no description.
+        stars:
+          type: integer
+          description: >
+            Star count, the same figure the 0.2 weight above is
+            normalized from.
 
     SearchRequest:
       type: object
@@ -431,11 +444,24 @@ components:
 
     Citation:
       type: object
-      required: [item_id, chunk_text, section_heading, chunk_index, relevance_score]
+      required: [item_id, title, repo_url, chunk_text, section_heading, chunk_index, relevance_score]
       properties:
         item_id:
           type: string
           description: Integer item id of the repo this chunk came from, serialized as a string.
+        title:
+          type: string
+          description: >
+            Name of the repo this chunk came from, without the owner
+            prefix. Included so a citation can be attributed without a
+            follow-up GET /v1/items/{item_id}.
+        repo_url:
+          type: string
+          format: uri
+          description: >
+            The cited repo on GitHub, derived as
+            https://github.com/{owner}/{title} — the same construction
+            GET /v1/items uses for `github_url`.
         chunk_text:
           type: string
         section_heading:

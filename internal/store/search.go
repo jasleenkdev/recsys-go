@@ -33,6 +33,8 @@ const (
 
 type Citation struct {
 	ItemID         int64
+	Title          string
+	RepoURL        string
 	ChunkText      string
 	SectionHeading string
 	ChunkIndex     int
@@ -176,15 +178,24 @@ func searchReadmeChunks(ctx context.Context, db *sql.DB, vec []float64, limit in
 // fetchChunkDetails looks up chunk text, section heading, and item_id
 // from Postgres for a set of Qdrant point IDs (readme_chunks.id),
 // attaching each chunk's similarity score from the Qdrant search.
+//
+// The JOIN onto items carries the repo's title and owner back with the
+// chunk. A citation is only useful if the reader can tell which repo it
+// came from, and resolving that client-side meant one detail fetch per
+// citation for two columns that sit one foreign key away from the rows
+// this query already reads. The join is on items' primary key, and at
+// most maxChunksForContext rows reach it.
 func fetchChunkDetails(ctx context.Context, db *sql.DB, chunkIDs []int64, scores map[int64]float64) ([]Citation, error) {
 	if len(chunkIDs) == 0 {
 		return nil, nil
 	}
 
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, item_id, chunk_text, section_heading, chunk_index
-		FROM readme_chunks
-		WHERE id = ANY($1)
+		SELECT c.id, c.item_id, c.chunk_text, c.section_heading, c.chunk_index,
+		       i.title, i.owner
+		FROM readme_chunks c
+		JOIN items i ON i.id = c.item_id
+		WHERE c.id = ANY($1)
 	`, pqInt64Array(chunkIDs))
 	if err != nil {
 		return nil, err
@@ -197,11 +208,14 @@ func fetchChunkDetails(ctx context.Context, db *sql.DB, chunkIDs []int64, scores
 		var chunkText string
 		var sectionHeading sql.NullString
 		var chunkIndex int
-		if err := rows.Scan(&id, &itemID, &chunkText, &sectionHeading, &chunkIndex); err != nil {
+		var title, owner string
+		if err := rows.Scan(&id, &itemID, &chunkText, &sectionHeading, &chunkIndex, &title, &owner); err != nil {
 			return nil, err
 		}
 		citations = append(citations, Citation{
 			ItemID:         itemID,
+			Title:          title,
+			RepoURL:        GitHubURL(owner, title),
 			ChunkText:      chunkText,
 			SectionHeading: sectionHeading.String,
 			ChunkIndex:     chunkIndex,

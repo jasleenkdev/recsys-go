@@ -25,10 +25,19 @@ const (
 
 var httpClient = &http.Client{Timeout: 10 * time.Second}
 
-// RankedItem is a single candidate with its final blended score.
+// RankedItem is a single candidate with its final blended score, plus
+// the metadata a client needs to render it.
+//
+// The metadata rides along because the ranker already reads these rows
+// to compute the star component of the score — carrying the columns it
+// has already loaded costs nothing, and not carrying them forced every
+// client into one detail fetch per ranked item.
 type RankedItem struct {
-	ItemID int64
-	Score  float64
+	ItemID      int64
+	Score       float64
+	Title       string
+	Description string
+	Stars       int
 }
 
 // CandidateResult holds up to poolSize ranked candidates for a user,
@@ -92,26 +101,40 @@ func GetCandidates(ctx context.Context, db *sql.DB, userID int64) (CandidateResu
 		}
 	}
 
-	stars, err := getStarCounts(ctx, db, candidateItemIDs(unseen))
+	meta, err := getCandidateItems(ctx, db, candidateItemIDs(unseen))
 	if err != nil {
-		return CandidateResult{}, fmt.Errorf("fetching star counts: %w", err)
+		return CandidateResult{}, fmt.Errorf("fetching candidate items: %w", err)
 	}
 
 	maxStars := 0
-	for _, s := range stars {
-		if s > maxStars {
-			maxStars = s
+	for _, m := range meta {
+		if m.Stars > maxStars {
+			maxStars = m.Stars
 		}
 	}
 
 	var rankedList []RankedItem
 	for _, c := range unseen {
+		m, ok := meta[c.ItemID]
+		if !ok {
+			// Ranked in Qdrant but gone from Postgres — a stale vector
+			// for a deleted repo. Drop it rather than emitting a card
+			// with no title.
+			continue
+		}
+
 		normalizedStars := 0.0
 		if maxStars > 0 {
-			normalizedStars = float64(stars[c.ItemID]) / float64(maxStars)
+			normalizedStars = float64(m.Stars) / float64(maxStars)
 		}
 		finalScore := c.Similarity*similarityWeight + normalizedStars*starsWeight
-		rankedList = append(rankedList, RankedItem{ItemID: c.ItemID, Score: finalScore})
+		rankedList = append(rankedList, RankedItem{
+			ItemID:      c.ItemID,
+			Score:       finalScore,
+			Title:       m.Title,
+			Description: m.Description,
+			Stars:       m.Stars,
+		})
 	}
 
 	sort.Slice(rankedList, func(i, j int) bool {
@@ -213,26 +236,42 @@ func candidateItemIDs(cs []candidateScore) []int64 {
 	return ids
 }
 
-func getStarCounts(ctx context.Context, db *sql.DB, itemIDs []int64) (map[int64]int, error) {
+// candidateItem is the per-item data the ranker needs: stars to score
+// with, title and description to render with.
+type candidateItem struct {
+	Title       string
+	Description string
+	Stars       int
+}
+
+// getCandidateItems loads every candidate in one indexed query keyed on
+// the primary key. It was previously getStarCounts and selected only
+// `stars`; the extra two columns come off the same rows, so the widened
+// select adds no round trips and no extra index work.
+func getCandidateItems(ctx context.Context, db *sql.DB, itemIDs []int64) (map[int64]candidateItem, error) {
 	if len(itemIDs) == 0 {
-		return map[int64]int{}, nil
+		return map[int64]candidateItem{}, nil
 	}
-	rows, err := db.QueryContext(ctx, `SELECT id, stars FROM items WHERE id = ANY($1)`, pqInt64Array(itemIDs))
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, title, COALESCE(description, ''), stars
+		FROM items
+		WHERE id = ANY($1)
+	`, pqInt64Array(itemIDs))
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	stars := make(map[int64]int)
+	items := make(map[int64]candidateItem, len(itemIDs))
 	for rows.Next() {
 		var id int64
-		var s int
-		if err := rows.Scan(&id, &s); err != nil {
+		var it candidateItem
+		if err := rows.Scan(&id, &it.Title, &it.Description, &it.Stars); err != nil {
 			return nil, err
 		}
-		stars[id] = s
+		items[id] = it
 	}
-	return stars, rows.Err()
+	return items, rows.Err()
 }
 
 func pqInt64Array(ids []int64) string {

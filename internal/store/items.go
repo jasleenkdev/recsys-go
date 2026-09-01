@@ -30,6 +30,14 @@ type Item struct {
 	CreatedAt   string
 }
 
+// GitHubURL builds a repository's canonical URL. Both the item-detail
+// response and search citations link to repos, and both must agree on
+// how that link is spelled — so the construction lives here once rather
+// than being rebuilt at each call site.
+func GitHubURL(owner, name string) string {
+	return "https://github.com/" + owner + "/" + name
+}
+
 // ReadmeSection is one chunk of a repo's README, in document order.
 type ReadmeSection struct {
 	ChunkIndex     int
