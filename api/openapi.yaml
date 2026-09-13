@@ -355,6 +355,23 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /healthz:
+    get:
+      summary: Liveness check for the hosting platform
+      description: >
+        Unversioned infrastructure probe (Render health check). Returns 200
+        whenever the process is serving HTTP. It deliberately checks no
+        dependencies — Postgres, Kafka, Qdrant and Redis failures surface
+        on the endpoints that use them, not here — so a downstream outage
+        never makes the platform restart-loop the API.
+      responses:
+        '200':
+          description: The process is up.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
 components:
   schemas:
 
@@ -624,6 +641,14 @@ components:
           type: array
           items:
             type: string
+
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
 
     ErrorResponse:
       type: object

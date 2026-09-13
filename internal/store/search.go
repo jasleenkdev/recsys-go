@@ -146,6 +146,7 @@ func searchReadmeChunks(ctx context.Context, db *sql.DB, vec []float64, limit in
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	SetQdrantAuth(req)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {

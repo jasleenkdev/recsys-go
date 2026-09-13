@@ -17,10 +17,10 @@ import (
 
 const (
 	qdrantFetchLimit = 150 // over-fetch to leave room for exclusion + a full page pool
-	poolSize          = 100 // full ranked pool stored per session, not just one page
+	poolSize         = 100 // full ranked pool stored per session, not just one page
 
 	similarityWeight = 0.8
-	starsWeight       = 0.2
+	starsWeight      = 0.2
 )
 
 var httpClient = &http.Client{Timeout: 10 * time.Second}
@@ -205,6 +205,7 @@ func searchRepoEmbeddings(ctx context.Context, vec []float64, limit int) ([]cand
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	SetQdrantAuth(req)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {

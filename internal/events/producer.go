@@ -30,7 +30,10 @@ type Producer struct {
 // kafka.NewWriter path quietly substitutes RequireAll. Async stays false
 // so WriteMessages surfaces the broker's error to the handler instead of
 // swallowing it.
-func NewProducer(brokers []string, topic string) *Producer {
+//
+// transport carries TLS/SASL for hosted Kafka (see Transport). nil keeps
+// kafka-go's default plaintext, unauthenticated transport.
+func NewProducer(brokers []string, topic string, transport kafka.RoundTripper) *Producer {
 	return &Producer{
 		writer: &kafka.Writer{
 			Addr:         kafka.TCP(brokers...),
@@ -39,6 +42,7 @@ func NewProducer(brokers []string, topic string) *Producer {
 			RequiredAcks: kafka.RequireAll,
 			Async:        false,
 			WriteTimeout: 5 * time.Second,
+			Transport:    transport,
 		},
 	}
 }

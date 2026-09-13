@@ -421,6 +421,22 @@ func languagesHandler(db *sql.DB) http.HandlerFunc {
 	}
 }
 
+type healthResponse struct {
+	Status string `json:"status"`
+}
+
+// healthzHandler answers the platform health check (Render). It reports
+// only that this process is up and serving HTTP, and deliberately checks
+// no dependencies: a failing health check makes Render restart the
+// instance or pull it from rotation, and neither fixes a Postgres, Kafka,
+// Qdrant or Redis outage. Gating on them would turn a downstream blip
+// into every instance being cycled at once, while the real endpoints
+// already report their own dependency failures per request (500, 503,
+// retrieval_error).
+func healthzHandler(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, healthResponse{Status: "ok"})
+}
+
 func main() {
 	cfg := config.Load()
 
@@ -430,15 +446,18 @@ func main() {
 	}
 	defer db.Close()
 
-	rdb := redis.NewClient(&redis.Options{
-		Addr: cfg.RedisAddr,
-	})
+	rdb := session.NewRedisClient(cfg)
 	defer rdb.Close()
 
-	producer := events.NewProducer(cfg.KafkaBrokers, kafkaTopic)
+	kafkaTransport, err := events.Transport(cfg)
+	if err != nil {
+		log.Fatalf("invalid kafka security config: %v", err)
+	}
+	producer := events.NewProducer(cfg.KafkaBrokers, kafkaTopic, kafkaTransport)
 	defer producer.Close()
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", healthzHandler)
 	mux.HandleFunc("GET /v1/recommendations/{user_id}", recommendationsHandler(db, rdb))
 	mux.HandleFunc("POST /v1/recommendations/search", searchHandler(db))
 	mux.HandleFunc("POST /v1/auth/sync", authSyncHandler(db))

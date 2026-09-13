@@ -39,6 +39,7 @@ func upsertPoints(collection string, points []qdrantPoint) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	store.SetQdrantAuth(req)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {

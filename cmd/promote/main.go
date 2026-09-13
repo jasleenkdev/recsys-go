@@ -79,6 +79,10 @@ type stagedRepo struct {
 	Name        string
 	Description sql.NullString
 	Language    sql.NullString
+	// Stars must be carried through to items explicitly: items.stars
+	// defaults to 0, so leaving it out of the insert fails silently and
+	// zeroes browse order and the ranker's star weight for the repo.
+	Stars int
 	// TopicsJSON carries topics as JSON rather than a Go slice:
 	// database/sql has no array type, so the query casts on the way out
 	// and the insert casts back on the way in.
@@ -87,7 +91,7 @@ type stagedRepo struct {
 
 func promoteRepos(db *sql.DB, modelID int64) error {
 	rows, err := db.Query(`
-		SELECT id, github_id, owner, name, description, language,
+		SELECT id, github_id, owner, name, description, language, stars,
 		       array_to_json(COALESCE(topics, '{}'))::text
 		FROM repo_ingest_staging
 		WHERE embedded = false
@@ -101,7 +105,7 @@ func promoteRepos(db *sql.DB, modelID int64) error {
 	for rows.Next() {
 		var r stagedRepo
 		if err := rows.Scan(&r.ID, &r.GitHubID, &r.Owner, &r.Name, &r.Description,
-			&r.Language, &r.TopicsJSON); err != nil {
+			&r.Language, &r.Stars, &r.TopicsJSON); err != nil {
 			return err
 		}
 		staged = append(staged, r)
@@ -123,12 +127,12 @@ func promoteRepos(db *sql.DB, modelID int64) error {
 
 		var itemID int64
 		err = db.QueryRow(`
-			INSERT INTO items (title, description, owner, language, topics, github_id)
+			INSERT INTO items (title, description, owner, language, topics, github_id, stars)
 			VALUES ($1, $2, $3, $4,
 			        COALESCE((SELECT array_agg(value) FROM json_array_elements_text($5::json)), '{}'),
-			        $6)
+			        $6, $7)
 			RETURNING id
-		`, r.Name, r.Description, r.Owner, r.Language, r.TopicsJSON, r.GitHubID).Scan(&itemID)
+		`, r.Name, r.Description, r.Owner, r.Language, r.TopicsJSON, r.GitHubID, r.Stars).Scan(&itemID)
 		if err != nil {
 			log.Printf("  [%d/%d] items insert failed for staging id %d: %v", i+1, len(staged), r.ID, err)
 			continue
