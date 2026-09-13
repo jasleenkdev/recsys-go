@@ -17,3 +17,4 @@
 embedding_sidecar/venv/
 /promote-qdrant
 __pycache__/
+CLAUDE.md
