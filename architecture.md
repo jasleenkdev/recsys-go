@@ -9,11 +9,11 @@ Derived from the code at commit `e7af4a9`. Anything not backed by a file in the 
 Read this first. These are things the code does not settle, or that block an accurate production deploy.
 
 ### Deployment config that does not exist
-1. **No `render.yaml`, `Dockerfile`, `Procfile`, or CI config** anywhere in the repo. Every Render setting below is **proposed and unverified**.
+1. **`render.yaml` covers only the two Go services.** It defines `recsys-api` (web) and `recsys-consumer` (worker), with build and start commands, the health check, the plan, and env var names (values are set in the dashboard). It has **not been deployed or validated against Render yet**. Postgres, Redis, Kafka, Qdrant, the sidecar, and Ollama are **not provisioned** by it and remain open. There is still no `Dockerfile`, `Procfile`, or CI config.
 2. **No `vercel.json`**. The Vercel settings below assume defaults, with Root Directory = `frontend`.
 3. **No live deployment URLs** in any config, README, or env file.
 4. ~~**Port mismatch.**~~ **Resolved:** the API now listens on `PORT` (Render-injected), falling back to `API_PORT`, then `8081`.
-5. ~~**No health-check endpoint.**~~ **Resolved:** `GET /healthz` returns `200 {"status":"ok"}` and checks no dependencies. It is not wired into any Render config yet.
+5. ~~**No health-check endpoint.**~~ **Resolved:** `GET /healthz` returns `200 {"status":"ok"}` and checks no dependencies. It is wired in as `healthCheckPath: /healthz` in `render.yaml`.
 
 ### Backing services the code can't reach in a typical hosted setup
 6. ~~**Kafka has no TLS/SASL.**~~ **Resolved:** added optional `KAFKA_TLS` and `KAFKA_SASL_MECHANISM` (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512) with username and password, applied to both producer and consumer. Render still has no managed Kafka, so a provider must be chosen.
@@ -31,7 +31,7 @@ Items 6–8 are code-level support only. None of it has been tested against a li
 14. ~~**Consumer "retry" can lose events.**~~ **Resolved:** a transient insert error is now retried in place with capped exponential backoff (200ms → 30s, no attempt limit), and the next message isn't fetched until it succeeds. Covered by `cmd/consumer/main_test.go`. Trade-off: if a persistent error is misclassified as transient, the consumer stalls, visible via the attempt count in the log, instead of dropping events.
 15. **Events partitions end at 2027-12.** Inserts fail from 2028-01-01; there is no job that rolls partitions forward.
 16. **GitHub OAuth apps allow one callback URL.** Sign-in won't work on Vercel preview deployments unless you set up a separate OAuth app or proxy.
-17. **Unknown in production:** how the one-off ingest CLIs (`loader`, `promote`, `promote-qdrant`) run, and whether free-tier cold starts (Render spin-down) are acceptable behind Vercel function timeouts.
+17. **Unknown in production:** how the one-off ingest CLIs (`loader`, `promote`, `promote-qdrant`) run. `render.yaml` puts the API on the `starter` plan, which doesn't spin down. If it's ever moved to the free tier, check whether cold starts are acceptable behind Vercel function timeouts.
 
 ---
 
@@ -47,7 +47,7 @@ flowchart LR
 
   GH[GitHub OAuth]
 
-  subgraph Render["Render (proposed)"]
+  subgraph Render["Render (render.yaml)"]
     API["cmd/api<br/>Go net/http"]
     CON["cmd/consumer<br/>background worker"]
   end
@@ -169,17 +169,25 @@ Browser → Auth.js GitHub OAuth → `jwt` callback (fresh sign-in only) → `PO
 
 If `RECSYS_API_URL` is unset, the app silently falls back to `http://localhost:8081`, and every page renders the "Backend unavailable" state.
 
-### Render — backend (proposed; no config in repo)
-| Service | Render type | Build command | Start command | Env vars |
-|---|---|---|---|---|
-| `recsys-api` | Web Service (Go) | `go build -o bin/api ./cmd/api` | `./bin/api` | `DATABASE_URL`, `REDIS_ADDR`, `KAFKA_BROKERS`, `QDRANT_URL`, `EMBED_SIDECAR_URL`, `OLLAMA_URL`, plus provider auth as needed (`QDRANT_API_KEY`, `REDIS_PASSWORD`/`REDIS_TLS`, `KAFKA_TLS`/`KAFKA_SASL_*`). `PORT` is injected by Render; don't set `API_PORT`. |
-| `recsys-consumer` | Background Worker (not on the free tier) | `go build -o bin/consumer ./cmd/consumer` | `./bin/consumer` | `DATABASE_URL`, `KAFKA_BROKERS`, plus `KAFKA_TLS`/`KAFKA_SASL_*` for hosted Kafka |
-| Postgres | Render Postgres (supports pgvector — **verify on plan**) | — | — | Run migrations `000001`–`000016` before first start |
-| Redis | Render Key Value, internal address | — | — | — |
-| Ingest CLIs | One-off Job or local run against the prod DB | `go build ./cmd/loader ./cmd/promote ./cmd/promote-qdrant` | run in order | `GITHUB_TOKEN`, plus those binaries' vars |
-| Sidecar, Qdrant, Ollama | Undecided; see Open Questions 6–9 | — | — | — |
+### Render — backend
+The two Go services are defined in [`render.yaml`](render.yaml), a Render Blueprint. It is not yet deployed or validated. Every env var there is `sync: false`, so values are entered in the dashboard and none are committed.
 
-**Health check:** set the `recsys-api` Health Check Path to `/healthz` (`healthCheckPath: /healthz` in a future `render.yaml`). It returns `200 {"status":"ok"}` as soon as the process serves HTTP and checks no dependencies, so a Postgres, Kafka, Qdrant or Redis outage won't make Render restart-loop the API. The consumer is a background worker and has no HTTP health check.
+| Service | Render type | Plan | Build command | Start command | Env vars |
+|---|---|---|---|---|---|
+| `recsys-api` | Web Service (`runtime: go`) | `starter` | `go build -o bin/api ./cmd/api` | `./bin/api` | `DATABASE_URL`, `REDIS_ADDR`, `REDIS_USERNAME`, `REDIS_PASSWORD`, `REDIS_TLS`, `KAFKA_BROKERS`, `KAFKA_TLS`, `KAFKA_SASL_MECHANISM`, `KAFKA_SASL_USERNAME`, `KAFKA_SASL_PASSWORD`, `QDRANT_URL`, `QDRANT_API_KEY`, `EMBED_SIDECAR_URL`, `OLLAMA_URL`. `PORT` is injected by Render; `API_PORT` is not set. |
+| `recsys-consumer` | Background Worker (`runtime: go`; not on the free tier) | `starter` | `go build -o bin/consumer ./cmd/consumer` | `./bin/consumer` | `DATABASE_URL`, `KAFKA_BROKERS`, `KAFKA_TLS`, `KAFKA_SASL_MECHANISM`, `KAFKA_SASL_USERNAME`, `KAFKA_SASL_PASSWORD` |
+
+**Not covered by `render.yaml`, still open (proposed):**
+
+| Dependency | Proposed host | Notes |
+|---|---|---|
+| Postgres | Render Postgres (supports pgvector — **verify on plan**) or a hosted provider | Run migrations `000001`–`000016` before first start |
+| Redis | Render Key Value, internal address, or a hosted provider | — |
+| Kafka | Hosted provider (Render has no managed Kafka); undecided | Create topic `repo-events` by hand |
+| Qdrant, sidecar, Ollama | Undecided; see Open Questions 6–10 | Create Qdrant collections by hand |
+| Ingest CLIs | One-off Job or local run against the prod DB: `go build ./cmd/loader ./cmd/promote ./cmd/promote-qdrant`, run in order | `GITHUB_TOKEN`, plus those binaries' vars |
+
+**Health check:** `render.yaml` sets `healthCheckPath: /healthz` on `recsys-api`. It returns `200 {"status":"ok"}` as soon as the process serves HTTP and checks no dependencies, so a Postgres, Kafka, Qdrant or Redis outage won't make Render restart-loop the API. The consumer is a background worker and has no HTTP health check.
 
 `go.mod` pins `go 1.26.5`. If Render's Go image is older, `GOTOOLCHAIN=auto` should download the right toolchain (**verify**). A Dockerfile would remove that uncertainty.
 

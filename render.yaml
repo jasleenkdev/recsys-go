@@ -1,0 +1,111 @@
+# render.yaml — Render Blueprint for the recsys-go backend.
+#
+# Defines the two Go binaries only: the HTTP API (web service) and the Kafka
+# consumer (background worker). The frontend deploys to Vercel, and the
+# ingest CLIs (loader, promote, promote-qdrant) are run by hand.
+#
+# THIS FILE ALONE DOES NOT MAKE THE BACKEND WORK. None of the backing
+# services below are provisioned here; each must exist before the services
+# start, with its connection details entered as env vars in the dashboard:
+#
+#   - Postgres + pgvector  NOT provisioned. Render Postgres or a hosted
+#                          provider; the host must allow CREATE EXTENSION
+#                          vector. Run migrations/ before the first deploy.
+#   - Redis                NOT provisioned. Render Key Value or a hosted
+#                          provider. Used by the API only.
+#   - Kafka                NOT provisioned. Render has no managed Kafka, so a
+#                          hosted provider is required. Create the
+#                          repo-events topic by hand.
+#   - Qdrant               NOT provisioned. Qdrant Cloud or self-hosted.
+#                          Create the repo_embeddings and readme_chunks
+#                          collections by hand. Used by the API only.
+#   - Embedding sidecar    NOT provisioned. Where the sidecar and Ollama run
+#     and Ollama           is still undecided (architecture.md, Open
+#                          Questions #9). Without them, search returns
+#                          retrieval_error and nothing else breaks.
+#
+# Every env var is sync: false, so no values are committed. Render prompts
+# for them in the dashboard. Leaving an optional one blank is safe:
+# internal/config treats empty as unset. Only variables each binary actually
+# reads are listed. PORT is omitted because Render injects it and
+# internal/config prefers it. API_PORT is omitted because a leftover value is
+# ignored when PORT is set, and it only matters for local dev.
+#
+# go.mod pins go 1.26.5. If Render's Go image is older, the toolchain's
+# default GOTOOLCHAIN=auto should download 1.26.5 during the build (verify on
+# the first deploy).
+
+services:
+  - type: web
+    name: recsys-api
+    runtime: go # the current name for the deprecated `env` field
+    # starter is the cheapest tier that doesn't spin down when idle. Upsize if
+    # the embedding sidecar is ever co-located on this instance, or if request
+    # volume needs more memory.
+    plan: starter
+    buildCommand: go build -o bin/api ./cmd/api
+    startCommand: ./bin/api
+    # Liveness only: /healthz deliberately checks no dependencies, so a
+    # downstream outage can't make Render restart-loop the API.
+    healthCheckPath: /healthz
+    envVars:
+      # Postgres
+      - key: DATABASE_URL
+        sync: false
+      # Redis (recommendation snapshot sessions)
+      - key: REDIS_ADDR
+        sync: false
+      - key: REDIS_USERNAME # optional; ACL users only, requires REDIS_PASSWORD
+        sync: false
+      - key: REDIS_PASSWORD # optional; secret
+        sync: false
+      - key: REDIS_TLS # optional; true or false
+        sync: false
+      # Kafka (event producer)
+      - key: KAFKA_BROKERS
+        sync: false
+      - key: KAFKA_TLS # optional; true or false
+        sync: false
+      - key: KAFKA_SASL_MECHANISM # optional; PLAIN, SCRAM-SHA-256 or SCRAM-SHA-512
+        sync: false
+      - key: KAFKA_SASL_USERNAME # required with a mechanism
+        sync: false
+      - key: KAFKA_SASL_PASSWORD # required with a mechanism; secret
+        sync: false
+      # Qdrant (ANN search for recommendations and README search)
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY # optional; secret
+        sync: false
+      # Embedding sidecar and Ollama (grounded search)
+      - key: EMBED_SIDECAR_URL
+        sync: false
+      - key: OLLAMA_URL
+        sync: false
+
+  - type: worker
+    name: recsys-consumer
+    runtime: go
+    # Background workers have no free tier; starter is the cheapest plan.
+    plan: starter
+    buildCommand: go build -o bin/consumer ./cmd/consumer
+    startCommand: ./bin/consumer
+    # No healthCheckPath: the consumer serves no HTTP. It needs no Redis,
+    # Qdrant, sidecar or Ollama; it only inserts events and recomputes user
+    # embeddings in Postgres.
+    envVars:
+      # Postgres
+      - key: DATABASE_URL
+        sync: false
+      # Kafka (consumer group events-consumer). Security settings must match
+      # the API's, since both talk to the same brokers.
+      - key: KAFKA_BROKERS
+        sync: false
+      - key: KAFKA_TLS # optional; true or false
+        sync: false
+      - key: KAFKA_SASL_MECHANISM # optional; PLAIN, SCRAM-SHA-256 or SCRAM-SHA-512
+        sync: false
+      - key: KAFKA_SASL_USERNAME # required with a mechanism
+        sync: false
+      - key: KAFKA_SASL_PASSWORD # required with a mechanism; secret
+        sync: false
